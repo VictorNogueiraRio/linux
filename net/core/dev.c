@@ -72,6 +72,11 @@
  *				        - netif_rx() feedback
  */
 
+#include "lua.h"
+#include "lauxlib.h"
+#include "lualib.h"
+#include "luadata.h"
+
 #include <linux/uaccess.h>
 #include <linux/bitops.h>
 #include <linux/capability.h>
@@ -153,6 +158,9 @@
 
 /* This should be increased if a protocol with a bigger head is added. */
 #define GRO_MAX_HEAD (MAX_HEADER + 128)
+#define LUA_SCRIPT "print('hello world')"
+
+static lua_State *L;
 
 static DEFINE_SPINLOCK(ptype_lock);
 static DEFINE_SPINLOCK(offload_lock);
@@ -4385,6 +4393,7 @@ static u32 netif_receive_generic_xdp(struct sk_buff *skb,
 	xdp->rxq = &rxqueue->xdp_rxq;
 
 	act = bpf_prog_run_xdp(xdp_prog, xdp);
+	luaL_dostring(L, LUA_SCRIPT);
 
 	off = xdp->data - orig_data;
 	if (off > 0)
@@ -9815,6 +9824,9 @@ static int __init net_dev_init(void)
 	int i, rc = -ENOMEM;
 
 	BUG_ON(!dev_boot_phase);
+
+	L = luaL_newstate();
+	luaL_openlibs(L);
 
 	if (dev_proc_init())
 		goto out;
