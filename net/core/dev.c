@@ -67,6 +67,17 @@
  *              J Hadi Salim    :       - Backlog queue sampling
  *				        - netif_rx() feedback
  */
+#ifndef _LUNATIK_H
+#define _LUNATIK_H
+#include <lua.h>
+#include <lauxlib.h>
+#include <lualib.h>
+#endif
+
+#ifndef _LUADATA_H
+#define _LUADATA_H
+#include <luadata.h>
+#endif
 
 #include <linux/uaccess.h>
 #include <linux/bitops.h>
@@ -150,11 +161,20 @@
 /* This should be increased if a protocol with a bigger head is added. */
 #define GRO_MAX_HEAD (MAX_HEADER + 128)
 
+struct lua_state_cpu {
+	lua_State 		*L;
+	int			cpu;
+	struct list_head	list;
+};
+
+typedef struct lua_state_cpu lua_state_cpu;
+
 static DEFINE_SPINLOCK(ptype_lock);
 static DEFINE_SPINLOCK(offload_lock);
 struct list_head ptype_base[PTYPE_HASH_SIZE] __read_mostly;
 struct list_head ptype_all __read_mostly;	/* Taps */
 static struct list_head offload_base __read_mostly;
+static struct list_head lua_state_cpu_list;
 
 static int netif_rx_internal(struct sk_buff *skb);
 static int call_netdevice_notifiers_info(unsigned long val,
@@ -867,6 +887,36 @@ struct net_device *dev_get_by_index(struct net *net, int ifindex)
 	return dev;
 }
 EXPORT_SYMBOL(dev_get_by_index);
+
+u32 lua_prog_run_xdp(lua_State *L, char *lua_funcname, struct xdp_buff *xdp)
+{
+	u32 ret = 0;
+	int base;
+	int data_ref;
+
+	if (!L)
+		goto out;
+
+	base = lua_gettop(L);
+	if (lua_getglobal(L, lua_funcname) != LUA_TFUNCTION) {
+		pr_err("function %s not found\n", lua_funcname);
+		goto out;
+	}
+
+	data_ref = ldata_newref(L, xdp->data, xdp->data_end - xdp->data);
+	if (lua_pcall(L, 1, 1, 0)) {
+		pr_err("%s\n", lua_tostring(L, -1));
+		goto cleanup;
+	}
+
+	ret = lua_tointeger(L, -1);
+
+cleanup:
+	lua_settop(L, base);
+	ldata_unref(L, data_ref);
+out:
+	return ret;
+}
 
 /**
  *	dev_get_by_napi_id - find a device by napi_id
@@ -4317,7 +4367,8 @@ static struct netdev_rx_queue *netif_get_rxqueue(struct sk_buff *skb)
 
 static u32 netif_receive_generic_xdp(struct sk_buff *skb,
 				     struct xdp_buff *xdp,
-				     struct bpf_prog *xdp_prog)
+				     struct bpf_prog *xdp_prog,
+				     char *lua_funcname)
 {
 	struct netdev_rx_queue *rxqueue;
 	void *orig_data, *orig_data_end;
@@ -4325,8 +4376,10 @@ static u32 netif_receive_generic_xdp(struct sk_buff *skb,
 	__be16 orig_eth_type;
 	struct ethhdr *eth;
 	bool orig_bcast;
-	int hlen, off;
+	int hlen, off, cpu;
 	u32 mac_len;
+	lua_State *L = NULL;
+	lua_state_cpu *sc;
 
 	/* Reinjected packets coming from act_mirred or similar should
 	 * not get XDP generic processing.
@@ -4372,7 +4425,19 @@ static u32 netif_receive_generic_xdp(struct sk_buff *skb,
 	rxqueue = netif_get_rxqueue(skb);
 	xdp->rxq = &rxqueue->xdp_rxq;
 
-	act = bpf_prog_run_xdp(xdp_prog, xdp);
+	if (xdp_prog)
+		act = bpf_prog_run_xdp(xdp_prog, xdp);
+
+	if (act == XDP_PASS || !xdp_prog) {
+		cpu = smp_processor_id();
+		list_for_each_entry(sc, &lua_state_cpu_list, list) {
+			if (sc->cpu == cpu) {
+				L = sc->L;
+				break;
+			}
+		}
+		act = lua_prog_run_xdp(L, lua_funcname, xdp);
+	}
 
 	/* check if bpf_xdp_adjust_head was used */
 	off = xdp->data - orig_data;
@@ -4418,7 +4483,8 @@ static u32 netif_receive_generic_xdp(struct sk_buff *skb,
 		bpf_warn_invalid_xdp_action(act);
 		/* fall through */
 	case XDP_ABORTED:
-		trace_xdp_exception(skb->dev, xdp_prog, act);
+		if (xdp_prog)
+			trace_xdp_exception(skb->dev, xdp_prog, act);
 		/* fall through */
 	case XDP_DROP:
 	do_drop:
@@ -4449,7 +4515,9 @@ void generic_xdp_tx(struct sk_buff *skb, struct bpf_prog *xdp_prog)
 	}
 	HARD_TX_UNLOCK(dev, txq);
 	if (free_skb) {
-		trace_xdp_exception(dev, xdp_prog, XDP_TX);
+		if (xdp_prog)
+			trace_xdp_exception(dev, xdp_prog, XDP_TX);
+
 		kfree_skb(skb);
 	}
 }
@@ -4457,14 +4525,17 @@ EXPORT_SYMBOL_GPL(generic_xdp_tx);
 
 static DEFINE_STATIC_KEY_FALSE(generic_xdp_needed_key);
 
-int do_xdp_generic(struct bpf_prog *xdp_prog, struct sk_buff *skb)
+int do_xdp_generic(struct bpf_prog *xdp_prog, struct sk_buff *skb,
+		   char *lua_funcname)
 {
-	if (xdp_prog) {
+
+	if (xdp_prog || lua_funcname) {
 		struct xdp_buff xdp;
 		u32 act;
 		int err;
 
-		act = netif_receive_generic_xdp(skb, &xdp, xdp_prog);
+		act = netif_receive_generic_xdp(skb, &xdp, xdp_prog,
+						lua_funcname);
 		if (act != XDP_PASS) {
 			switch (act) {
 			case XDP_REDIRECT:
@@ -4836,7 +4907,8 @@ another_round:
 		int ret2;
 
 		preempt_disable();
-		ret2 = do_xdp_generic(rcu_dereference(skb->dev->xdp_prog), skb);
+		ret2 = do_xdp_generic(rcu_dereference(skb->dev->xdp_prog), skb,
+                                   rcu_dereference(skb->dev->xdp_lua_funcname));
 		preempt_enable();
 
 		if (ret2 != XDP_PASS)
@@ -5181,6 +5253,36 @@ static int generic_xdp_install(struct net_device *dev, struct netdev_bpf *xdp)
 	}
 
 	return ret;
+}
+
+void generic_xdp_lua_install_func(struct net_device *dev, char *lua_funcname)
+{
+	char *old = rcu_dereference(dev->xdp_lua_funcname);
+
+	ASSERT_RTNL();
+	if (!lua_funcname && old)
+		static_branch_dec(&generic_xdp_needed_key);
+	else if(lua_funcname && !old)
+		static_branch_inc(&generic_xdp_needed_key);
+
+	if (old)
+		kfree(old);
+
+	rcu_assign_pointer(dev->xdp_lua_funcname, lua_funcname);
+}
+
+int generic_xdp_lua_install_prog(char *lua_prog)
+{
+	lua_state_cpu *sc;
+
+	list_for_each_entry(sc, &lua_state_cpu_list, list) {
+		if (luaL_dostring(sc->L, lua_prog)) {
+			pr_err(KERN_INFO "error: %s\nOn cpu: %d\n",
+				lua_tostring(sc->L, -1), sc->cpu);
+			return -EINVAL;
+		}
+	}
+	return 0;
 }
 
 static int netif_receive_skb_internal(struct sk_buff *skb)
@@ -9800,6 +9902,7 @@ static struct pernet_operations __net_initdata default_device_ops = {
 static int __init net_dev_init(void)
 {
 	int i, rc = -ENOMEM;
+	lua_state_cpu *new_state_cpu;
 
 	BUG_ON(!dev_boot_phase);
 
@@ -9814,6 +9917,7 @@ static int __init net_dev_init(void)
 		INIT_LIST_HEAD(&ptype_base[i]);
 
 	INIT_LIST_HEAD(&offload_base);
+	INIT_LIST_HEAD(&lua_state_cpu_list);
 
 	if (register_pernet_subsys(&netdev_net_ops))
 		goto out;
@@ -9844,6 +9948,23 @@ static int __init net_dev_init(void)
 		init_gro_hash(&sd->backlog);
 		sd->backlog.poll = process_backlog;
 		sd->backlog.weight = weight_p;
+
+		new_state_cpu = (lua_state_cpu *) kmalloc(sizeof(lua_state_cpu),
+							  GFP_ATOMIC);
+		if (!new_state_cpu)
+			continue;
+
+		new_state_cpu->L = luaL_newstate();
+		if  (!new_state_cpu->L) {
+			kfree(new_state_cpu);
+			continue;
+		}
+
+		luaL_openlibs(new_state_cpu->L);
+		luaL_requiref(new_state_cpu->L, "data", luaopen_data, 1);
+		new_state_cpu->cpu = i;
+
+		list_add(&new_state_cpu->list, &lua_state_cpu_list);
 	}
 
 	dev_boot_phase = 0;

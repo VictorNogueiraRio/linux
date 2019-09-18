@@ -3502,10 +3502,14 @@ xdp_do_redirect_slow(struct net_device *dev, struct xdp_buff *xdp,
 	if (unlikely(err))
 		goto err;
 
-	_trace_xdp_redirect(dev, xdp_prog, index);
+	if (xdp_prog)
+		_trace_xdp_redirect(dev, xdp_prog, index);
+
 	return 0;
 err:
-	_trace_xdp_redirect_err(dev, xdp_prog, index, err);
+	if (xdp_prog)
+		_trace_xdp_redirect_err(dev, xdp_prog, index, err);
+
 	return err;
 }
 
@@ -3620,10 +3624,13 @@ static int xdp_do_redirect_map(struct net_device *dev, struct xdp_buff *xdp,
 		goto err;
 
 	ri->map_to_flush = map;
-	_trace_xdp_redirect_map(dev, xdp_prog, fwd, map, index);
+	if (xdp_prog)
+		_trace_xdp_redirect_map(dev, xdp_prog, fwd, map, index);
+
 	return 0;
 err:
-	_trace_xdp_redirect_map_err(dev, xdp_prog, fwd, map, index, err);
+	if (xdp_prog)
+		_trace_xdp_redirect_map_err(dev, xdp_prog, fwd, map, index, err);
 	return err;
 }
 
@@ -3674,10 +3681,14 @@ static int xdp_do_generic_redirect_map(struct net_device *dev,
 		goto err;
 	}
 
-	_trace_xdp_redirect_map(dev, xdp_prog, fwd, map, index);
+	if (xdp_prog)
+		_trace_xdp_redirect_map(dev, xdp_prog, fwd, map, index);
+
 	return 0;
 err:
-	_trace_xdp_redirect_map_err(dev, xdp_prog, fwd, map, index, err);
+	if (xdp_prog)
+		_trace_xdp_redirect_map_err(dev, xdp_prog, fwd, map, index, err);
+
 	return err;
 }
 
@@ -3705,11 +3716,15 @@ int xdp_do_generic_redirect(struct net_device *dev, struct sk_buff *skb,
 		goto err;
 
 	skb->dev = fwd;
-	_trace_xdp_redirect(dev, xdp_prog, index);
+	if (xdp_prog)
+		_trace_xdp_redirect(dev, xdp_prog, index);
+
 	generic_xdp_tx(skb, xdp_prog);
 	return 0;
 err:
-	_trace_xdp_redirect_err(dev, xdp_prog, index, err);
+	if (xdp_prog)
+		_trace_xdp_redirect_err(dev, xdp_prog, index, err);
+
 	return err;
 }
 EXPORT_SYMBOL_GPL(xdp_do_generic_redirect);

@@ -105,6 +105,8 @@ LIBBPF_0.0.1 {
 		bpf_prog_linfo__lfind;
 		bpf_raw_tracepoint_open;
 		bpf_set_link_xdp_fd;
+		bpf_set_link_xdp_lua_prog;
+		bpf_set_link_xdp_lua_func;
 		bpf_task_fd_query;
 		bpf_verify_program;
 		btf__fd;

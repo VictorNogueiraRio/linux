@@ -1930,7 +1930,7 @@ drop:
 		rcu_read_lock();
 		xdp_prog = rcu_dereference(tun->xdp_prog);
 		if (xdp_prog) {
-			ret = do_xdp_generic(xdp_prog, skb);
+			ret = do_xdp_generic(xdp_prog, skb, NULL);
 			if (ret != XDP_PASS) {
 				rcu_read_unlock();
 				local_bh_enable();
@@ -2486,7 +2486,7 @@ build:
 	skb_probe_transport_header(skb);
 
 	if (skb_xdp) {
-		err = do_xdp_generic(xdp_prog, skb);
+		err = do_xdp_generic(xdp_prog, skb, NULL);
 		if (err != XDP_PASS)
 			goto out;
 	}
