@@ -2006,6 +2006,19 @@ static const struct bpf_func_proto bpf_csum_diff_proto = {
 	.arg5_type	= ARG_ANYTHING,
 };
 
+BPF_CALL_2(bpf_lua_run, struct xdp_buff *, ctx, const char *, func)
+{
+	return lua_prog_run_xdp(ctx, func);
+}
+
+static const struct bpf_func_proto bpf_lua_run_proto = {
+	.func           = bpf_lua_run,
+	.gpl_only       = false,
+	.ret_type       = RET_INTEGER,
+	.arg1_type      = ARG_ANYTHING,
+	.arg2_type      = ARG_ANYTHING,
+};
+
 BPF_CALL_2(bpf_csum_update, struct sk_buff *, skb, __wsum, csum)
 {
 	/* The interface is to be used in combination with bpf_csum_diff()
@@ -6175,6 +6188,8 @@ xdp_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
 	case BPF_FUNC_tcp_check_syncookie:
 		return &bpf_tcp_check_syncookie_proto;
 #endif
+	case BPF_FUNC_lua_run:
+		return &bpf_lua_run_proto;
 	default:
 		return bpf_base_func_proto(func_id);
 	}

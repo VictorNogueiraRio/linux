@@ -187,6 +187,55 @@ cleanup:
 	return ret;
 }
 
+int bpf_set_link_xdp_lua(int ifindex, char *lua_prog)
+{
+	int sock, seq = 0, ret;
+	struct nlattr *nla, *nla_xdp;
+	struct {
+		struct nlmsghdr  nh;
+		struct ifinfomsg ifinfo;
+		char             attrbuf[8192];
+	} req;
+	__u32 nl_pid;
+
+	sock = libbpf_netlink_open(&nl_pid);
+	if (sock < 0)
+		return sock;
+
+	memset(&req, 0, sizeof(req));
+	req.nh.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg));
+	req.nh.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
+	req.nh.nlmsg_type = RTM_SETLINK;
+	req.nh.nlmsg_pid = 0;
+	req.nh.nlmsg_seq = ++seq;
+	req.ifinfo.ifi_family = AF_UNSPEC;
+	req.ifinfo.ifi_index = ifindex;
+
+	/* started nested attribute for XDP */
+	nla = (struct nlattr *)(((char *)&req)
+				+ NLMSG_ALIGN(req.nh.nlmsg_len));
+	nla->nla_type = NLA_F_NESTED | IFLA_XDP;
+	nla->nla_len = NLA_HDRLEN;
+
+	nla_xdp = (struct nlattr *)((char *)nla + nla->nla_len);
+	nla_xdp->nla_type = IFLA_XDP_LUA;
+	nla_xdp->nla_len = NLA_HDRLEN + strlen(lua_prog);
+	memcpy((char *)nla_xdp + NLA_HDRLEN, lua_prog, strlen(lua_prog));
+	nla->nla_len += nla_xdp->nla_len;
+
+	req.nh.nlmsg_len += NLA_ALIGN(nla->nla_len);
+
+	if (send(sock, &req, req.nh.nlmsg_len, 0) < 0) {
+		ret = -errno;
+		goto cleanup;
+	}
+	ret = bpf_netlink_recv(sock, nl_pid, seq, NULL, NULL, NULL);
+
+cleanup:
+	close(sock);
+	return ret;
+}
+
 static int __dump_link_nlmsg(struct nlmsghdr *nlh,
 			     libbpf_dump_nlmsg_t dump_link_nlmsg, void *cookie)
 {

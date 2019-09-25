@@ -29,6 +29,7 @@ hostprogs-y += test_cgrp2_attach
 hostprogs-y += test_cgrp2_sock
 hostprogs-y += test_cgrp2_sock2
 hostprogs-y += xdp1
+hostprogs-y += xdplua
 hostprogs-y += xdp2
 hostprogs-y += xdp_router_ipv4
 hostprogs-y += test_current_task_under_cgroup
@@ -109,6 +110,7 @@ task_fd_query-objs := bpf_load.o task_fd_query_user.o $(TRACE_HELPERS)
 xdp_sample_pkts-objs := xdp_sample_pkts_user.o $(TRACE_HELPERS)
 ibumad-objs := bpf_load.o ibumad_user.o $(TRACE_HELPERS)
 hbm-objs := bpf_load.o hbm.o $(CGROUP_HELPERS)
+xdplua-objs := xdplua_user.o
 
 # Tell kbuild to always build the programs
 always := $(hostprogs-y)
@@ -170,6 +172,7 @@ always += xdp_sample_pkts_kern.o
 always += ibumad_kern.o
 always += hbm_out_kern.o
 always += hbm_edt_kern.o
+always += xdplua_kern.o
 
 KBUILD_HOSTCFLAGS += -I$(objtree)/usr/include
 KBUILD_HOSTCFLAGS += -I$(srctree)/tools/lib/bpf/

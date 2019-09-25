@@ -68,6 +68,18 @@
  *				        - netif_rx() feedback
  */
 
+#ifndef _LUNATIK_H
+#define _LUNATIK_H
+#include <lua.h>
+#include <lauxlib.h>
+#include <lualib.h>
+#endif
+
+#ifndef _LUADATA_H
+#define _LUADATA_H
+#include <luadata.h>
+#endif
+
 #include <linux/uaccess.h>
 #include <linux/bitops.h>
 #include <linux/capability.h>
@@ -150,11 +162,20 @@
 /* This should be increased if a protocol with a bigger head is added. */
 #define GRO_MAX_HEAD (MAX_HEADER + 128)
 
+struct lua_state_cpu {
+	lua_State 		*L;
+	int			cpu;
+	struct list_head	list;
+};
+
+typedef struct lua_state_cpu lua_state_cpu;
+
 static DEFINE_SPINLOCK(ptype_lock);
 static DEFINE_SPINLOCK(offload_lock);
 struct list_head ptype_base[PTYPE_HASH_SIZE] __read_mostly;
 struct list_head ptype_all __read_mostly;	/* Taps */
 static struct list_head offload_base __read_mostly;
+static struct list_head lua_state_cpu_list;
 
 static int netif_rx_internal(struct sk_buff *skb);
 static int call_netdevice_notifiers_info(unsigned long val,
@@ -867,6 +888,46 @@ struct net_device *dev_get_by_index(struct net *net, int ifindex)
 	return dev;
 }
 EXPORT_SYMBOL(dev_get_by_index);
+
+u32 lua_prog_run_xdp(struct xdp_buff *ctx, const char *func)
+{
+	lua_State *L = NULL;
+	lua_state_cpu *sc;
+	int cpu;
+	int base;
+	int data_ref;
+	u32 ret = 0;
+
+	cpu = smp_processor_id();
+	list_for_each_entry(sc, &lua_state_cpu_list, list) {
+		if (sc->cpu == cpu) {
+			L = sc->L;
+			break;
+		}
+	}
+
+	if (!L)
+		goto out;
+
+	base = lua_gettop(L);
+	if (lua_getglobal(L, func) != LUA_TFUNCTION) {
+		printk(KERN_WARNING "function %s not found\n", func);
+		goto out;
+	}
+
+	data_ref = ldata_newref(L, ctx->data, ctx->data_end - ctx->data);
+	if (lua_pcall(L, 1, 1, 0)) {
+		printk(KERN_WARNING "%s\n", lua_tostring(L, -1));
+		goto cleanup;
+	}
+	ret = lua_tointeger(L, -1);
+
+cleanup:
+	lua_settop(L, base);
+	ldata_unref(L, data_ref);
+out:
+	return ret;
+}
 
 /**
  *	dev_get_by_napi_id - find a device by napi_id
@@ -5181,6 +5242,20 @@ static int generic_xdp_install(struct net_device *dev, struct netdev_bpf *xdp)
 	}
 
 	return ret;
+}
+
+int generic_xdp_lua_install(char *lua_prog) {
+	lua_state_cpu *sc;
+
+	list_for_each_entry(sc, &lua_state_cpu_list, list) {
+		if (luaL_dostring(sc->L, lua_prog)) {
+			printk(KERN_WARNING "error: %s\nOn cpu: %d\n",
+				lua_tostring(sc->L, -1), sc->cpu);
+			return -1;
+		}
+	}
+
+	return 0;
 }
 
 static int netif_receive_skb_internal(struct sk_buff *skb)
@@ -9800,6 +9875,7 @@ static struct pernet_operations __net_initdata default_device_ops = {
 static int __init net_dev_init(void)
 {
 	int i, rc = -ENOMEM;
+	lua_state_cpu *new_state_cpu;
 
 	BUG_ON(!dev_boot_phase);
 
@@ -9814,6 +9890,7 @@ static int __init net_dev_init(void)
 		INIT_LIST_HEAD(&ptype_base[i]);
 
 	INIT_LIST_HEAD(&offload_base);
+	INIT_LIST_HEAD(&lua_state_cpu_list);
 
 	if (register_pernet_subsys(&netdev_net_ops))
 		goto out;
@@ -9844,6 +9921,22 @@ static int __init net_dev_init(void)
 		init_gro_hash(&sd->backlog);
 		sd->backlog.poll = process_backlog;
 		sd->backlog.weight = weight_p;
+
+		new_state_cpu = (lua_state_cpu *) kmalloc(sizeof(lua_state_cpu), GFP_KERNEL);
+		if (!new_state_cpu)
+			continue;
+
+		new_state_cpu->L = luaL_newstate();
+		if  (!new_state_cpu->L) {
+			kfree(new_state_cpu);
+			continue;
+		}
+
+		luaL_openlibs(new_state_cpu->L);
+		luaL_requiref(new_state_cpu->L, "data", luaopen_data, 1);
+		new_state_cpu->cpu = i;
+
+		list_add(&new_state_cpu->list, &lua_state_cpu_list);
 	}
 
 	dev_boot_phase = 0;

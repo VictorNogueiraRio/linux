@@ -38,6 +38,8 @@ struct sock_reuseport;
 struct ctl_table;
 struct ctl_table_header;
 
+u32 lua_prog_run_xdp(struct xdp_buff *ctx, const char *func);
+
 /* ArgX, context and stack frame pointer register positions. Note,
  * Arg1, Arg2, Arg3, etc are used as argument mappings of function
  * calls in BPF_CALL instruction.
